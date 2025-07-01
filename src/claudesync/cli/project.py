@@ -6,6 +6,7 @@ from tqdm import tqdm
 from ..provider_factory import get_provider
 from ..utils import handle_errors, validate_and_get_provider
 from ..exceptions import ProviderError, ConfigurationError
+from ..project_instructions import ProjectInstructions
 from .file import file
 from .submodule import submodule
 from ..syncmanager import retry_on_403
@@ -391,6 +392,117 @@ def delete_files_from_project(provider, organization_id, project_id, project_nam
                 file_pbar.update(1)
     except ProviderError as e:
         click.echo(f"Error deleting files from project {project_name}: {str(e)}")
+
+
+@project.group()
+def instructions():
+    """Manage project instructions (markdown files for AI context)."""
+    pass
+
+
+@instructions.command()
+@click.pass_obj
+@handle_errors  
+def init(config):
+    """Create a project instructions template file."""
+    local_path = config.get_local_path()
+    
+    if not local_path:
+        click.echo(
+            "❌ No project configured. Run 'claudesync project create' or 'claudesync project set' first."
+        )
+        return
+    
+    instructions = ProjectInstructions(local_path)
+    
+    if instructions.create_instructions_template():
+        click.echo("✅ Created project instructions template")
+        click.echo(f"📝 Edit: {instructions.instructions_file}")
+        click.echo("💡 This file will be automatically synced with Claude.ai")
+        click.echo("💡 Perfect for editing in Obsidian or any markdown editor!")
+    else:
+        click.echo("ℹ️ Project instructions file already exists")
+        click.echo(f"📝 Edit: {instructions.instructions_file}")
+
+
+@instructions.command()
+@click.pass_obj
+@handle_errors
+def status(config):
+    """Show project instructions status."""
+    local_path = config.get_local_path()
+    
+    if not local_path:
+        click.echo("❌ No project configured")
+        return
+    
+    instructions = ProjectInstructions(local_path)
+    info = instructions.get_instructions_info()
+    
+    click.echo("📋 Project Instructions Status")
+    click.echo("")
+    
+    # File status
+    if info['file_exists']:
+        click.echo(f"📝 Instructions file: ✅ {info['file_path']}")
+        click.echo(f"📏 File size: {info['file_size']} bytes")
+    else:
+        click.echo(f"📝 Instructions file: ❌ Not found")
+        click.echo("💡 Create with: claudesync project instructions init")
+    
+    # Sync status
+    enabled = info['enabled']
+    click.echo(f"🔄 Sync enabled: {'✅' if enabled else '❌'}")
+    
+    if info['file_exists'] and enabled:
+        if info['needs_sync']:
+            click.echo("📤 Sync status: ⚠️ Needs sync (file modified)")
+        else:
+            click.echo("📤 Sync status: ✅ Up to date")
+    
+    click.echo("")
+    click.echo("💡 Available commands:")
+    click.echo("  claudesync project instructions init    # Create template")
+    click.echo("  claudesync project instructions enable  # Enable syncing")
+    click.echo("  claudesync project instructions disable # Disable syncing")
+    
+    if info['file_exists']:
+        click.echo(f"  # Edit: {info['file_path']}")
+
+
+@instructions.command()
+@click.pass_obj
+@handle_errors
+def enable(config):
+    """Enable project instructions syncing."""
+    local_path = config.get_local_path()
+    
+    if not local_path:
+        click.echo("❌ No project configured")
+        return
+    
+    instructions = ProjectInstructions(local_path)
+    instructions.enable_instructions(True)
+    click.echo("✅ Project instructions syncing enabled")
+    
+    if not instructions.instructions_file.exists():
+        click.echo("💡 Create instructions with: claudesync project instructions init")
+
+
+@instructions.command()
+@click.pass_obj
+@handle_errors
+def disable(config):
+    """Disable project instructions syncing."""
+    local_path = config.get_local_path()
+    
+    if not local_path:
+        click.echo("❌ No project configured")
+        return
+    
+    instructions = ProjectInstructions(local_path)
+    instructions.enable_instructions(False)
+    click.echo("✅ Project instructions syncing disabled")
 
 
 project.add_command(submodule)

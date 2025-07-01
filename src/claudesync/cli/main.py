@@ -11,6 +11,7 @@ import importlib.metadata
 from claudesync.cli.chat import chat
 from claudesync.configmanager import FileConfigManager, InMemoryConfigManager
 from claudesync.syncmanager import SyncManager
+from claudesync.project_instructions import get_instructions_for_sync
 from claudesync.utils import (
     handle_errors,
     validate_and_get_provider,
@@ -21,6 +22,10 @@ from .organization import organization
 from .project import project
 from .sync import schedule
 from .config import config
+from .watch import watch
+from .workspace import workspace
+from .conflict import conflict
+from .select import select
 import logging
 
 logging.basicConfig(
@@ -103,9 +108,17 @@ def upgrade(ctx):
 @click.option(
     "--dryrun", is_flag=True, default=False, help="Just show what files would be sent"
 )
+@click.option(
+    "--skip-conflicts", is_flag=True, default=False, help="Skip conflict detection and resolution"
+)
+@click.option(
+    "--auto-resolve", 
+    type=click.Choice(['local', 'remote']),
+    help="Automatically resolve conflicts using specified strategy"
+)
 @click.pass_obj
 @handle_errors
-def push(config, category, uberproject, dryrun):
+def push(config, category, uberproject, dryrun, skip_conflicts, auto_resolve):
     """Synchronize the project files, optionally including submodules in the parent project."""
     provider = validate_and_get_provider(config, require_project=True)
 
@@ -143,7 +156,7 @@ def push(config, category, uberproject, dryrun):
         click.echo(
             f"Syncing submodule {current_submodule['active_project_name']} [{current_dir}]"
         )
-        sync_submodule(provider, config, current_submodule, category)
+        sync_submodule(provider, config, current_submodule, category, handle_conflicts=not skip_conflicts)
     else:
         # Sync main project
         sync_manager = SyncManager(provider, config, config.get_local_path())
@@ -160,23 +173,50 @@ def push(config, category, uberproject, dryrun):
                 config, local_path, category, include_submodules=False
             )
 
+        # Add project instructions if they need syncing
+        instructions_data = get_instructions_for_sync(local_path)
+        if instructions_data:
+            # Add instructions with a computed hash (they'll be uploaded as a file)
+            from claudesync.utils import compute_md5_hash
+            instructions_hash = compute_md5_hash(instructions_data['content'])
+            local_files[instructions_data['file_name']] = instructions_hash
+            click.echo("📋 Including project instructions in sync")
+
+        # Set temporary auto-resolve strategy if specified
+        if auto_resolve:
+            strategy_map = {'local': 'local-wins', 'remote': 'remote-wins'}
+            original_strategy = config.get("conflict_resolution_strategy")
+            config.set("conflict_resolution_strategy", strategy_map[auto_resolve], local=True)
+        
         if dryrun:
             for file in local_files.keys():
                 click.echo(f"Would send file: {file}")
             click.echo("Not sending files due to dry run mode.")
             return
 
-        sync_manager.sync(local_files, remote_files)
-        click.echo(
-            f"Main project '{active_project_name}' synced successfully: https://claude.ai/project/{active_project_id}"
-        )
+        sync_success = sync_manager.sync(local_files, remote_files, handle_conflicts=not skip_conflicts)
+        
+        # Restore original strategy if we changed it
+        if auto_resolve:
+            if original_strategy:
+                config.set("conflict_resolution_strategy", original_strategy, local=True)
+            else:
+                config.set("conflict_resolution_strategy", None, local=True)
+        
+        if sync_success:
+            click.echo(
+                f"Main project '{active_project_name}' synced successfully: https://claude.ai/project/{active_project_id}"
+            )
+        else:
+            click.echo("❌ Sync aborted due to conflicts. Use 'claudesync conflict resolve' to fix them.")
+            return
 
         # Always sync submodules to their respective projects
         for submodule in submodules:
-            sync_submodule(provider, config, submodule, category)
+            sync_submodule(provider, config, submodule, category, handle_conflicts=not skip_conflicts)
 
 
-def sync_submodule(provider, config, submodule, category):
+def sync_submodule(provider, config, submodule, category, handle_conflicts=True):
     submodule_path = Path(config.get_local_path()) / submodule["relative_path"]
     submodule_files = get_local_files(config, str(submodule_path), category)
     remote_submodule_files = provider.list_files(
@@ -198,7 +238,7 @@ def sync_submodule(provider, config, submodule, category):
         provider, submodule_config, str(submodule_path)
     )
 
-    submodule_sync_manager.sync(submodule_files, remote_submodule_files)
+    submodule_sync_manager.sync(submodule_files, remote_submodule_files, handle_conflicts=handle_conflicts)
     click.echo(
         f"Submodule '{submodule['active_project_name']}' synced successfully: "
         f"https://claude.ai/project/{submodule['active_project_id']}"
@@ -252,6 +292,10 @@ cli.add_command(project)
 cli.add_command(schedule)
 cli.add_command(config)
 cli.add_command(chat)
+cli.add_command(watch)
+cli.add_command(workspace)
+cli.add_command(conflict)
+cli.add_command(select)
 
 if __name__ == "__main__":
     cli()

@@ -10,6 +10,7 @@ from tqdm import tqdm
 from claudesync.utils import compute_md5_hash
 from claudesync.exceptions import ProviderError
 from .compression import compress_content, decompress_content
+from .conflict_resolver import ConflictResolver, ConflictResolution
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +56,118 @@ class SyncManager:
         self.compression_algorithm = config.get("compression_algorithm", "none")
         self.synced_files = {}
 
-    def sync(self, local_files, remote_files):
+    def sync(self, local_files, remote_files, handle_conflicts=True):
+        """
+        Synchronize local files with remote files, optionally handling conflicts.
+        
+        Args:
+            local_files: Dictionary of local file paths to checksums
+            remote_files: List of remote file dictionaries
+            handle_conflicts: Whether to detect and handle conflicts before syncing
+        """
         self.synced_files = {}  # Reset synced files at the start of sync
+        
+        # Detect conflicts if requested
+        if handle_conflicts:
+            conflicts = self._detect_and_handle_conflicts(local_files, remote_files)
+            if conflicts and not self._conflicts_resolved(conflicts):
+                # Conflicts detected and not resolved - abort sync
+                logger.warning("Sync aborted due to unresolved conflicts")
+                return False
+        
+        # Proceed with normal sync
         if self.compression_algorithm == "none":
             self._sync_without_compression(local_files, remote_files)
         else:
             self._sync_with_compression(local_files, remote_files)
+        
+        return True
+    
+    def _detect_and_handle_conflicts(self, local_files, remote_files):
+        """
+        Detect conflicts and handle them based on configuration.
+        
+        Returns:
+            List of detected conflicts
+        """
+        # Create conflict resolver
+        resolver = ConflictResolver(self.config)
+        conflicts = resolver.detect_conflicts(local_files, remote_files)
+        
+        if not conflicts:
+            return []
+        
+        logger.info(f"Detected {len(conflicts)} conflicts")
+        
+        # Check for auto-resolution strategy
+        strategy = self.config.get("conflict_resolution_strategy", None)
+        
+        if strategy == "local-wins":
+            # Automatically keep local versions
+            for conflict in conflicts:
+                resolver.apply_resolution(conflict, ConflictResolution.KEEP_LOCAL)
+            logger.info(f"Auto-resolved {len(conflicts)} conflicts using 'local-wins' strategy")
+            
+        elif strategy == "remote-wins":
+            # Automatically keep remote versions
+            for conflict in conflicts:
+                resolver.apply_resolution(conflict, ConflictResolution.KEEP_REMOTE)
+            logger.info(f"Auto-resolved {len(conflicts)} conflicts using 'remote-wins' strategy")
+            
+        elif strategy == "auto-merge":
+            # Attempt simple auto-merge (basic implementation)
+            resolved_count = 0
+            for conflict in conflicts:
+                if self._attempt_auto_merge(conflict, resolver):
+                    resolved_count += 1
+                else:
+                    # Fall back to local wins for failed auto-merges
+                    resolver.apply_resolution(conflict, ConflictResolution.KEEP_LOCAL)
+                    resolved_count += 1
+            logger.info(f"Auto-resolved {resolved_count}/{len(conflicts)} conflicts using 'auto-merge' strategy")
+            
+        else:
+            # No auto-resolution - conflicts need manual attention
+            logger.warning(f"Found {len(conflicts)} conflicts that need manual resolution")
+            print(f"\n⚠️  Found {len(conflicts)} conflicts that need manual resolution.")
+            print("💡 Use 'claudesync conflict resolve' to resolve them interactively")
+            print("💡 Or configure auto-resolution with 'claudesync conflict configure'")
+            return conflicts
+        
+        return []  # All conflicts resolved
+    
+    def _conflicts_resolved(self, conflicts):
+        """Check if all conflicts have been resolved."""
+        return len(conflicts) == 0
+    
+    def _attempt_auto_merge(self, conflict, resolver):
+        """
+        Attempt simple auto-merge for a conflict.
+        
+        This is a basic implementation that could be expanded with more sophisticated
+        merge algorithms.
+        
+        Returns:
+            True if merge was successful, False otherwise
+        """
+        try:
+            # Simple strategy: if one version is a superset of the other, use the larger one
+            local_lines = set(conflict.local_content.splitlines())
+            remote_lines = set(conflict.remote_content.splitlines())
+            
+            if local_lines.issubset(remote_lines):
+                # Local is subset of remote, use remote
+                return resolver.apply_resolution(conflict, ConflictResolution.KEEP_REMOTE)
+            elif remote_lines.issubset(local_lines):
+                # Remote is subset of local, use local  
+                return resolver.apply_resolution(conflict, ConflictResolution.KEEP_LOCAL)
+            else:
+                # No clear subset relationship - can't auto-merge
+                return False
+                
+        except Exception as e:
+            logger.error(f"Auto-merge failed for {conflict.file_path}: {e}")
+            return False
 
     def _sync_without_compression(self, local_files, remote_files):
         remote_files_to_delete = set(rf["file_name"] for rf in remote_files)

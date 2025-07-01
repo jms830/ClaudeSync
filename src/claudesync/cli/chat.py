@@ -1,5 +1,8 @@
 import os
 
+import os
+import time
+
 import click
 import logging
 from ..exceptions import ProviderError
@@ -16,12 +19,147 @@ def chat():
 
 
 @chat.command()
+@click.option(
+    "--dry-run", 
+    is_flag=True, 
+    help="Preview what will be downloaded without making changes"
+)
+@click.option(
+    "--backup-existing", 
+    is_flag=True, 
+    help="Create backup of existing chat files before overwriting"
+)
+@click.option(
+    "--force", 
+    is_flag=True, 
+    help="Skip confirmation prompts and proceed with download"
+)
+@click.option(
+    "-a", "--all", "sync_all",
+    is_flag=True,
+    help="Sync all chats regardless of project association"
+)
 @click.pass_obj
 @handle_errors
-def pull(config):
+def pull(config, dry_run, backup_existing, force, sync_all):
     """Synchronize chats and their artifacts from the remote source."""
     provider = validate_and_get_provider(config, require_project=True)
-    sync_chats(provider, config)
+    
+    # Get local path and chat destination
+    local_path = config.get("local_path")
+    if not local_path:
+        click.echo("❌ No local project path found. Please run from a project directory.")
+        return
+    
+    chat_destination = os.path.join(local_path, "claude_chats")
+    
+    # Check if chat directory exists and has content
+    existing_files = []
+    if os.path.exists(chat_destination):
+        for root, dirs, files in os.walk(chat_destination):
+            for file in files:
+                if file.endswith(('.json', '.md', '.jsx', '.py', '.sql', '.html')):
+                    existing_files.append(os.path.relpath(os.path.join(root, file), chat_destination))
+    
+    # Get chats that will be downloaded
+    organization_id = config.get("active_organization_id")
+    active_project_id = config.get("active_project_id")
+    
+    click.echo("🔍 Scanning remote chats...")
+    chats = provider.get_chat_conversations(organization_id)
+    
+    # Filter chats based on project association
+    if sync_all:
+        target_chats = chats
+        click.echo(f"📋 Found {len(target_chats)} total chats to sync")
+    else:
+        target_chats = [
+            chat for chat in chats 
+            if chat.get("project") and chat["project"].get("uuid") == active_project_id
+        ]
+        click.echo(f"📋 Found {len(target_chats)} project-associated chats to sync")
+    
+    if not target_chats:
+        click.echo("✅ No chats found to sync")
+        return
+    
+    # Show preview of what will be downloaded
+    click.echo(f"\n📥 Chats to download:")
+    for i, chat in enumerate(target_chats[:10], 1):  # Show first 10
+        project = chat.get("project")
+        project_name = project.get("name") if project else "No Project"
+        click.echo(f"  {i}. {chat.get('name', 'Unnamed')} (Project: {project_name})")
+    
+    if len(target_chats) > 10:
+        click.echo(f"  ... and {len(target_chats) - 10} more chats")
+    
+    click.echo(f"\n📁 Download location: {chat_destination}")
+    
+    # Show existing files warning
+    if existing_files:
+        click.echo(f"\n⚠️  WARNING: {len(existing_files)} existing chat files found!")
+        if len(existing_files) <= 10:
+            click.echo("📄 Existing files:")
+            for file in existing_files:
+                click.echo(f"  • {file}")
+        else:
+            click.echo("📄 Sample existing files:")
+            for file in existing_files[:10]:
+                click.echo(f"  • {file}")
+            click.echo(f"  ... and {len(existing_files) - 10} more files")
+        
+        click.echo("\n💡 Options to protect existing data:")
+        click.echo("  --backup-existing  Create backup before download")
+        click.echo("  --dry-run          Preview without making changes")
+    
+    # Dry run mode
+    if dry_run:
+        click.echo(f"\n🔍 DRY RUN MODE - No files will be changed")
+        click.echo(f"✅ Would download {len(target_chats)} chats to {chat_destination}")
+        if existing_files:
+            click.echo(f"⚠️  Would potentially overwrite {len(existing_files)} existing files")
+        click.echo("\n💡 Run without --dry-run to perform actual download")
+        return
+    
+    # Confirmation prompt (unless forced)
+    if not force:
+        if existing_files and not backup_existing:
+            click.echo(f"\n⚠️  This will potentially overwrite {len(existing_files)} existing files!")
+            click.echo("💡 Consider using --backup-existing to protect your data")
+            
+        if not click.confirm(f"\nProceed with downloading {len(target_chats)} chats?"):
+            click.echo("❌ Chat download cancelled")
+            return
+    
+    # Create backup if requested
+    if backup_existing and existing_files:
+        backup_path = f"{chat_destination}_backup_{int(time.time())}"
+        click.echo(f"💾 Creating backup at: {backup_path}")
+        try:
+            import shutil
+            shutil.copytree(chat_destination, backup_path)
+            click.echo(f"✅ Backup created successfully")
+        except Exception as e:
+            click.echo(f"❌ Backup failed: {e}")
+            if not click.confirm("Continue without backup?"):
+                return
+    
+    # Perform the actual sync
+    click.echo(f"\n🚀 Starting chat synchronization...")
+    sync_chats(provider, config, sync_all)
+    
+    # Show completion summary
+    click.echo(f"\n✅ Chat synchronization completed!")
+    click.echo(f"📁 Location: {chat_destination}")
+    
+    if backup_existing and existing_files:
+        click.echo(f"💾 Backup: {backup_path}")
+    
+    click.echo(f"\n💡 Next steps:")
+    click.echo(f"  • Review downloaded chats in {chat_destination}")
+    click.echo(f"  • Use 'claudesync chat ls' to list available chats")
+    if existing_files and not backup_existing:
+        click.echo(f"  • Consider using --backup-existing next time for safety")
 
 
 @chat.command()
