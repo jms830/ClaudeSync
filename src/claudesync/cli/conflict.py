@@ -29,9 +29,14 @@ def conflict():
     "--category", 
     help="Specify the file category to check for conflicts"
 )
+@click.option(
+    "--count",
+    is_flag=True,
+    help="Only output the conflict count (for automation)"
+)
 @click.pass_obj
 @handle_errors
-def detect(config, auto_resolve, category):
+def detect(config, auto_resolve, category, count):
     """Detect conflicts between local and remote files."""
     provider = validate_and_get_provider(config, require_project=True)
     
@@ -51,6 +56,11 @@ def detect(config, auto_resolve, category):
     # Detect conflicts
     resolver = ConflictResolver(config)
     conflicts = resolver.detect_conflicts(local_files, remote_files)
+    
+    # If count flag is set, only output the count
+    if count:
+        click.echo(f"{len(conflicts)} conflicts")
+        return
     
     if not conflicts:
         click.echo("✅ No conflicts detected. All files are in sync.")

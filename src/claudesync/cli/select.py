@@ -5,6 +5,7 @@ Provides interactive multi-select, filtering, and bulk operations.
 
 import click
 import os
+import json
 from pathlib import Path
 from typing import List, Dict, Set
 from datetime import datetime
@@ -44,8 +45,14 @@ def select():
     default='all',
     help="Filter by project status"
 )
+@click.option(
+    "--output",
+    type=click.Choice(['table', 'json']),
+    default='table',
+    help="Output format (table or json)"
+)
 @handle_errors
-def list(filter_pattern, search_path, max_depth, status):
+def list(filter_pattern, search_path, max_depth, status, output):
     """List all available projects with filtering options."""
     
     # Get workspace config
@@ -70,7 +77,23 @@ def list(filter_pattern, search_path, max_depth, status):
         click.echo(f"❌ No projects match the specified filters")
         return
     
-    # Display projects
+    # Handle JSON output
+    if output == 'json':
+        project_data = []
+        for project in filtered_projects:
+            project_info = {
+                'name': project.name,
+                'path': project.path,
+                'status': _get_project_status(project),
+                'hasConflicts': _project_has_conflicts(project),
+                'hasConfig': project.has_config,
+                'hasChats': _project_has_chats(project)
+            }
+            project_data.append(project_info)
+        click.echo(json.dumps(project_data, indent=2))
+        return
+    
+    # Display projects in table format
     click.echo(f"\n📋 Found {len(filtered_projects)} projects:")
     click.echo("=" * 80)
     
