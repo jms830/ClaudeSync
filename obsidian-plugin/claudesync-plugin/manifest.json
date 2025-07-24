@@ -1,0 +1,11 @@
+{
+  "id": "claudesync",
+  "name": "ClaudeSync",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "GUI management for ClaudeSync - sync your Obsidian notes with Claude.ai projects",
+  "author": "ClaudeSync Team",
+  "authorUrl": "https://github.com/jahwag/ClaudeSync",
+  "fundingUrl": "https://github.com/sponsors/jahwag",
+  "isDesktopOnly": true
+}
